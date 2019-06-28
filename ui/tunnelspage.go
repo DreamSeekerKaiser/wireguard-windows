@@ -116,6 +116,7 @@ func (tp *TunnelsPage) CreateToolbar() {
 	// HACK: Because of https://github.com/lxn/walk/issues/481
 	// we need to put the ToolBar into its own Composite.
 	toolBarContainer, _ := walk.NewComposite(tp.listContainer)
+	toolBarContainer.SetDoubleBuffering(true)
 	hlayout := walk.NewHBoxLayout()
 	hlayout.SetMargins(walk.Margins{})
 	toolBarContainer.SetLayout(hlayout)
@@ -184,11 +185,13 @@ func (tp *TunnelsPage) CreateToolbar() {
 	importAction2.SetShortcut(walk.Shortcut{walk.ModControl, walk.KeyO})
 	importAction2.Triggered().Attach(tp.onImport)
 	contextMenu.Actions().Add(importAction2)
+	tp.ShortcutActions().Add(importAction2)
 	addAction2 := walk.NewAction()
 	addAction2.SetText("Add empty tunnel...")
 	addAction2.SetShortcut(walk.Shortcut{walk.ModControl, walk.KeyN})
 	addAction2.Triggered().Attach(tp.onAddTunnel)
 	contextMenu.Actions().Add(addAction2)
+	tp.ShortcutActions().Add(addAction2)
 	exportAction2 := walk.NewAction()
 	exportAction2.SetText("Export all tunnels to zip...")
 	exportAction2.Triggered().Attach(tp.onExportTunnels)
@@ -199,25 +202,21 @@ func (tp *TunnelsPage) CreateToolbar() {
 	editAction.SetShortcut(walk.Shortcut{walk.ModControl, walk.KeyE})
 	editAction.Triggered().Attach(tp.onEditTunnel)
 	contextMenu.Actions().Add(editAction)
-	cloneAction := walk.NewAction()
-	cloneAction.SetText("Clone selected tunnel...")
-	cloneAction.Triggered().Attach(tp.onCloneTunnel)
-	contextMenu.Actions().Add(cloneAction)
+	tp.ShortcutActions().Add(editAction)
 	deleteAction2 := walk.NewAction()
 	deleteAction2.SetText("Remove selected tunnel(s)")
 	deleteAction2.SetShortcut(walk.Shortcut{0, walk.KeyDelete})
 	deleteAction2.Triggered().Attach(tp.onDelete)
 	contextMenu.Actions().Add(deleteAction2)
+	tp.listView.ShortcutActions().Add(deleteAction2)
 	tp.listView.SetContextMenu(contextMenu)
 	selectAllAction := walk.NewAction()
 	selectAllAction.SetText("Select all")
 	selectAllAction.SetShortcut(walk.Shortcut{walk.ModControl, walk.KeyA})
 	selectAllAction.Triggered().Attach(tp.onSelectAll)
 	contextMenu.Actions().Add(selectAllAction)
+	tp.listView.ShortcutActions().Add(selectAllAction)
 	tp.listView.SetContextMenu(contextMenu)
-
-	contextMenu.Actions().AttachShortcuts(tp.listView)
-	contextMenu.Actions().AttachShortcuts(tp)
 
 	setSelectionOrientedOptions := func() {
 		selected := len(tp.listView.SelectedIndexes())
@@ -227,7 +226,6 @@ func (tp *TunnelsPage) CreateToolbar() {
 		toggleAction.SetEnabled(selected == 1)
 		selectAllAction.SetEnabled(selected < all)
 		editAction.SetEnabled(selected == 1)
-		cloneAction.SetEnabled(selected == 1)
 	}
 	tp.listView.SelectedIndexesChanged().Attach(setSelectionOrientedOptions)
 	setSelectionOrientedOptions()
@@ -421,7 +419,7 @@ func (tp *TunnelsPage) onEditTunnel() {
 		return
 	}
 
-	if config := runTunnelEditDialog(tp.Form(), tunnel, false); config != nil {
+	if config := runTunnelEditDialog(tp.Form(), tunnel); config != nil {
 		go func() {
 			priorState, err := tunnel.State()
 			tunnel.Delete()
@@ -434,20 +432,8 @@ func (tp *TunnelsPage) onEditTunnel() {
 	}
 }
 
-func (tp *TunnelsPage) onCloneTunnel() {
-	tunnel := tp.listView.CurrentTunnel()
-	if tunnel == nil {
-		return
-	}
-
-	if config := runTunnelEditDialog(tp.Form(), tunnel, true); config != nil {
-		// Save new
-		tp.addTunnel(config)
-	}
-}
-
 func (tp *TunnelsPage) onAddTunnel() {
-	if config := runTunnelEditDialog(tp.Form(), nil, false); config != nil {
+	if config := runTunnelEditDialog(tp.Form(), nil); config != nil {
 		// Save new
 		tp.addTunnel(config)
 	}

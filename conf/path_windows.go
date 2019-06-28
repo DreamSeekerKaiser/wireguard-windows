@@ -6,19 +6,11 @@
 package conf
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
-	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
-
-//sys	coTaskMemFree(pointer uintptr) = ole32.CoTaskMemFree
-//sys	shGetKnownFolderPath(id *windows.GUID, flags uint32, token windows.Handle, path **uint16) (err error) [failretval!=0] = shell32.SHGetKnownFolderPath
-var folderIDLocalAppData = windows.GUID{0xf1b32785, 0x6fba, 0x4fcf, [8]byte{0x9d, 0x55, 0x7b, 0x8e, 0x7f, 0x15, 0x70, 0x91}}
-
-const kfFlagCreate = 0x00008000
 
 var cachedConfigFileDir string
 var cachedRootDir string
@@ -32,6 +24,7 @@ func tunnelConfigurationsDirectory() (string, error) {
 		return "", err
 	}
 	c := filepath.Join(root, "Configurations")
+	maybeMigrate(c)
 	err = os.MkdirAll(c, os.ModeDir|0700)
 	if err != nil {
 		return "", err
@@ -44,20 +37,9 @@ func RootDirectory() (string, error) {
 	if cachedRootDir != "" {
 		return cachedRootDir, nil
 	}
-	processToken, err := windows.OpenCurrentProcessToken()
+	root, err := windows.KnownFolderPath(windows.FOLDERID_LocalAppData, windows.KF_FLAG_CREATE)
 	if err != nil {
 		return "", err
-	}
-	defer processToken.Close()
-	var path *uint16
-	err = shGetKnownFolderPath(&folderIDLocalAppData, kfFlagCreate, windows.Handle(processToken), &path)
-	if err != nil {
-		return "", err
-	}
-	defer coTaskMemFree(uintptr(unsafe.Pointer(path)))
-	root := windows.UTF16ToString((*[windows.MAX_LONG_PATH + 1]uint16)(unsafe.Pointer(path))[:])
-	if len(root) == 0 {
-		return "", errors.New("Unable to determine configuration directory")
 	}
 	c := filepath.Join(root, "WireGuard")
 	err = os.MkdirAll(c, os.ModeDir|0700)

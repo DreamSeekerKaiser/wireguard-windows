@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"golang.org/x/sys/windows"
+	"golang.zx2c4.com/wireguard/tun/wintun"
 
 	"golang.zx2c4.com/wireguard/windows/manager"
 	"golang.zx2c4.com/wireguard/windows/ringlogger"
@@ -30,6 +31,7 @@ var flags = [...]string{
 	"/tunnelservice CONFIG_PATH",
 	"/ui CMD_READ_HANDLE CMD_WRITE_HANDLE CMD_EVENT_HANDLE LOG_MAPPING_HANDLE",
 	"/dumplog OUTPUT_PATH",
+	"/wintun /deleteall",
 }
 
 func fatal(v ...interface{}) {
@@ -37,13 +39,16 @@ func fatal(v ...interface{}) {
 	os.Exit(1)
 }
 
+func info(title string, format string, v ...interface{}) {
+	windows.MessageBox(0, windows.StringToUTF16Ptr(fmt.Sprintf(format, v...)), windows.StringToUTF16Ptr(title), windows.MB_ICONINFORMATION)
+}
+
 func usage() {
 	builder := strings.Builder{}
 	for _, flag := range flags {
 		builder.WriteString(fmt.Sprintf("    %s\n", flag))
 	}
-	msg := fmt.Sprintf("Usage: %s [\n%s]", os.Args[0], builder.String())
-	windows.MessageBox(0, windows.StringToUTF16Ptr(msg), windows.StringToUTF16Ptr("Command Line Options"), windows.MB_ICONINFORMATION)
+	info("Command Line Options", "Usage: %s [\n%s]", os.Args[0], builder.String())
 	os.Exit(1)
 }
 
@@ -208,6 +213,33 @@ func main() {
 			fatal(err)
 		}
 		return
+	case "/wintun":
+		if len(os.Args) < 3 {
+			usage()
+		}
+		switch os.Args[2] {
+		case "/deleteall":
+			if len(os.Args) != 3 {
+				usage()
+			}
+			deleted, rebootRequired, errors := wintun.DeleteAllInterfaces()
+			interfaceString := "no interfaces"
+			if len(deleted) > 0 {
+				interfaceString = fmt.Sprintf("interfaces %v", deleted)
+			}
+			errorString := ""
+			if len(errors) > 0 {
+				errorString = fmt.Sprintf(", encountering errors %v", errors)
+			}
+			rebootString := ""
+			if rebootRequired {
+				rebootString = " A reboot is required."
+			}
+			info("Wintun Cleanup", "Deleted %s%s.%s", interfaceString, errorString, rebootString)
+			return
+		default:
+			usage()
+		}
 	}
 	usage()
 }

@@ -16,9 +16,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"time"
-	"unsafe"
 
-	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
 	"golang.zx2c4.com/wireguard/device"
@@ -28,7 +26,6 @@ import (
 	"golang.zx2c4.com/wireguard/windows/conf"
 	"golang.zx2c4.com/wireguard/windows/ringlogger"
 	"golang.zx2c4.com/wireguard/windows/services"
-	"golang.zx2c4.com/wireguard/windows/tunnel/winipcfg"
 	"golang.zx2c4.com/wireguard/windows/version"
 )
 
@@ -36,35 +33,12 @@ type Service struct {
 	Path string
 }
 
-// TODO: integrate into x/sys/windows/svc/mgr
-func scmIsLocked() bool {
-	type lockStatus struct {
-		isLocked  uint32
-		owner     *uint16
-		duration  uint32
-		ownerData [1024]uint16
-	}
-	status := &lockStatus{}
-	s, err := mgr.Connect()
-	if err == nil {
-		var needed uint32
-		windows.NewLazySystemDLL("advapi32.dll").NewProc("QueryServiceLockStatusW").Call(
-			uintptr(s.Handle),
-			uintptr(unsafe.Pointer(status)),
-			uintptr(unsafe.Sizeof(lockStatus{})),
-			uintptr(unsafe.Pointer(&needed)),
-		)
-		s.Disconnect()
-	}
-	return status.isLocked != 0
-}
-
 func (service *Service) Execute(args []string, r <-chan svc.ChangeRequest, changes chan<- svc.Status) (svcSpecificEC bool, exitCode uint32) {
 	changes <- svc.Status{State: svc.StartPending}
 
 	var dev *device.Device
 	var uapi net.Listener
-	var routeChangeCallback *winipcfg.RouteChangeCallback
+	var watcher *interfaceWatcher
 	var nativeTun *tun.NativeTun
 	var err error
 	serviceError := services.ErrorSuccess
@@ -109,11 +83,8 @@ func (service *Service) Execute(args []string, r <-chan svc.ChangeRequest, chang
 			}
 		}()
 
-		if routeChangeCallback != nil {
-			routeChangeCallback.Unregister()
-		}
-		if nativeTun != nil {
-			unconfigureInterface(nativeTun)
+		if watcher != nil {
+			watcher.Destroy()
 		}
 		if uapi != nil {
 			uapi.Close()
@@ -152,13 +123,24 @@ func (service *Service) Execute(args []string, r <-chan svc.ChangeRequest, chang
 
 	log.Println("Starting", version.UserAgent())
 
-	if scmIsLocked() {
-		/* If we don't do this, then the Wintun installation will block forever, because
-		 * Windows doesn't like starting a service from a service that hasn't started, but
-		 * only when it's in the phase of autostarting services at boot, and even then,
-		 * seemingly only on Windows 8.1.
-		 */
-		changes <- svc.Status{State: svc.Running}
+	if m, err := mgr.Connect(); err == nil {
+		if lockStatus, err := m.LockStatus(); err == nil && lockStatus.IsLocked {
+			/* If we don't do this, then the Wintun installation will block forever, because
+			 * installing a Wintun device starts a service too. Apparently at boot time, Windows
+			 * 8.1 locks the SCM for each service start, creating a deadlock if we don't announce
+			 * that we're running before starting additional services.
+			 */
+			log.Printf("SCM locked for %v by %s, marking service as started", lockStatus.Age, lockStatus.Owner)
+			changes <- svc.Status{State: svc.Running}
+		}
+		m.Disconnect()
+	}
+
+	log.Println("Watching network interfaces")
+	watcher, err = watchInterface()
+	if err != nil {
+		serviceError = services.ErrorSetNetConfig
+		return
 	}
 
 	log.Println("Resolving DNS names")
@@ -169,7 +151,7 @@ func (service *Service) Execute(args []string, r <-chan svc.ChangeRequest, chang
 	}
 
 	log.Println("Creating Wintun device")
-	wintun, err := tun.CreateTUN(conf.Name)
+	wintun, err := tun.CreateTUNWithRequestedGUID(conf.Name, deterministicGUID(conf))
 	if err != nil {
 		serviceError = services.ErrorCreateWintun
 		return
@@ -218,22 +200,7 @@ func (service *Service) Execute(args []string, r <-chan svc.ChangeRequest, chang
 	log.Println("Bringing peers up")
 	dev.Up()
 
-	log.Println("Waiting for TCP/IP to attach to interface")
-	waitForFamilies(nativeTun) // TODO: move this sort of thing into tun/wintun/CreateInterface
-
-	log.Println("Monitoring default routes")
-	routeChangeCallback, err = monitorDefaultRoutes(dev, conf.Interface.MTU == 0, nativeTun)
-	if err != nil {
-		serviceError = services.ErrorBindSocketsToDefaultRoutes
-		return
-	}
-
-	log.Println("Setting device address")
-	err = configureInterface(conf, nativeTun)
-	if err != nil {
-		serviceError = services.ErrorSetNetConfig
-		return
-	}
+	watcher.Configure(dev, conf, nativeTun)
 
 	log.Println("Listening for UAPI requests")
 	go func() {
@@ -261,6 +228,9 @@ func (service *Service) Execute(args []string, r <-chan svc.ChangeRequest, chang
 				log.Printf("Unexpected service control request #%d\n", c)
 			}
 		case <-dev.Wait():
+			return
+		case e := <-watcher.errors:
+			serviceError, err = e.serviceError, e.err
 			return
 		}
 	}

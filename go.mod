@@ -1,7 +1,7 @@
 module golang.zx2c4.com/wireguard/windows
 
 require (
-	golang.zx2c4.com/wireguard eaf17becfa70c31bcfb6f195e8d68cb5b720ec4a
+	golang.zx2c4.com/wireguard 5e6eff81b6f7f18b3dd24bec03ea71f009a3e938
 
 	golang.org/x/crypto latest
 	golang.org/x/net latest
